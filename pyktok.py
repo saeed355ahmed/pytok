@@ -1,415 +1,145 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Jul 14 14:06:01 2022
-
-@author: freelon
-"""
-
-import asyncio
-import browser_cookie3
-from bs4 import BeautifulSoup
-from datetime import datetime
-import json
-import numpy as np
+import logging
+import subprocess
+import sys
 import os
-import pandas as pd
-import random
-import re
-import requests
-from TikTokApi import TikTokApi
 import time
+import json
+import requests
+from bs4 import BeautifulSoup
+from telegram import Bot
+import browser_cookie3
+import pyktok as pyk
 
-global cookies
-cookies = dict()
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(_name_)
 
-url_regex = '(?<=\.com/)(.+?)(?=\?|$)'
-video_id_regex = '(?<=/video/)([0-9]+)'
+# Function to install missing packages
+def install(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
-ms_token = os.environ.get(
-    "ms_token", None
-)
+# Ensure all necessary packages are installed
+packages = ["browser_cookie3", "pyktok", "beautifulsoup4", "python-telegram-bot"]
+for package in packages:
+    try:
+        _import_(package)
+    except ImportError:
+        install(package)
 
-headers = {'Accept-Encoding': 'gzip, deflate, sdch',
-           'Accept-Language': 'en-US,en;q=0.8',
-           'Upgrade-Insecure-Requests': '1',
-           'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/56.0.2924.87 Safari/537.36',
-           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-           'Cache-Control': 'max-age=0',
-           'Connection': 'keep-alive'}
-context_dict = {'viewport': {'width': 0,
-                             'height': 0},
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.150 Safari/537.36'}
+def load_json(file_name):
+    if os.path.exists(file_name):
+        with open(file_name, 'r') as file:
+            return json.load(file)
+    return {}
 
-runsb_rec = ('If pyktok does not operate as expected, you may find it helpful to run the \'specify_browser\' function. \'specify_browser\' takes as its sole argument a string representing a browser installed on your system, e.g. "chrome," "firefox," "edge," etc.')
-runsb_err = 'No browser defined for cookie extraction. We strongly recommend you run \'specify_browser\', which takes as its sole argument a string representing a browser installed on your system, e.g. "chrome," "firefox," "edge," etc.'
+def save_json(data, file_name):
+    with open(file_name, 'w') as file:
+        json.dump(data, file)
 
-print(runsb_rec)
+# Load configuration files
+tiktok_accounts = load_json('tiktok_accounts.json')
+telegram_credentials = load_json('telegram_credentials.json')
+telegram_topics = load_json('telegram_topics.json')
 
-class BrowserNotSpecifiedError(Exception):
-    def __init__(self):
-        super().__init__(runsb_err)
+# Telegram bot setup
+TELEGRAM_BOT_TOKEN = telegram_credentials['bot_token']
+TELEGRAM_CHAT_ID = telegram_credentials['chat_id']
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
-def specify_browser(browser):
-    global cookies
-    cookies = getattr(browser_cookie3,browser)(domain_name='www.tiktok.com')
-    
-def deduplicate_metadata(metadata_fn,video_df,dedup_field='video_id'):
-    if os.path.exists(metadata_fn):
-        metadata = pd.read_csv(metadata_fn,keep_default_na=False)
-        combined_data = pd.concat([metadata,video_df])
-        combined_data[dedup_field] = combined_data[dedup_field].astype(str)
-    else:
-        combined_data = video_df
-    return combined_data.drop_duplicates(dedup_field)
+def specify_browser(browser_name):
+    try:
+        cookies = getattr(browser_cookie3, browser_name)(domain_name='www.tiktok.com')
+        logger.info(f"Successfully specified browser: {browser_name}")
+        return cookies
+    except PermissionError as e:
+        logger.error(f"PermissionError: {e}")
+        logger.error("Try running the script with administrative privileges and ensure the browser is closed.")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+        sys.exit(1)
 
-def generate_data_row(video_obj):
-    data_header = ['video_id',
-                   'video_timestamp',
-                   'video_duration',
-                   'video_locationcreated',
-                   'video_diggcount',
-                   'video_sharecount',
-                   'video_commentcount',
-                   'video_playcount',
-                   'video_description',
-                   'video_is_ad',
-                   'video_stickers',
-                   'author_username',
-                   'author_name',
-                   'author_followercount',
-                   'author_followingcount',
-                   'author_heartcount',
-                   'author_videocount',
-                   'author_diggcount',
-                   'author_verified']
-    data_list = []
-    data_list.append(video_obj['id'])
-    try:
-        ctime = video_obj['createTime']
-        data_list.append(datetime.fromtimestamp(int(ctime)).isoformat())
-    except Exception:
-        data_list.append('')
-    try:
-        data_list.append(video_obj['video']['duration'])
-    except Exception:
-        data_list.append(np.nan)
-    try:
-        data_list.append(video_obj['locationCreated'])
-    except Exception:
-        data_list.append('')
-    try:
-        data_list.append(video_obj['stats']['diggCount'])
-    except Exception:
-        data_list.append(np.nan)
-    try:
-        data_list.append(video_obj['stats']['shareCount'])
-    except Exception:
-        data_list.append(np.nan)
-    try:
-        data_list.append(video_obj['stats']['commentCount'])
-    except Exception:
-        data_list.append(np.nan)
-    try:
-        data_list.append(video_obj['stats']['playCount'])
-    except Exception:
-        data_list.append(np.nan)
-    try:
-        data_list.append(video_obj['desc'])
-    except Exception:
-        data_list.append('')
-    try:
-        data_list.append(video_obj['isAd'])
-    except Exception:
-        data_list.append(False)
-    try:
-        video_stickers = []
-        for sticker in video_obj['stickersOnItem']:
-            for text in sticker['stickerText']:
-                video_stickers.append(text)
-        data_list.append(';'.join(video_stickers))
-    except Exception:
-        data_list.append('')
-    try:
-        data_list.append(video_obj['author']['uniqueId'])
-    except Exception:
+# Function to get the sound link from a TikTok video page
+def get_sound_link(video_url):
+    logger.info(f"Fetching sound link for: {video_url}")
+    response = requests.get(video_url)
+    if response.status_code == 200:
+        page_content = response.text
+        soup = BeautifulSoup(page_content, 'html.parser')
+        sound_link = soup.find('a', {'class': 'music-card'})
+        if sound_link:
+            return sound_link['href']
+    logger.error(f"Failed to fetch sound link for: {video_url}")
+    return None
+
+# Function to format and send Telegram messages
+def format_and_send_telegram_message(video_path, video_url, sound_link, categories):
+    message = f"Video.mp4\nVideo Link: {video_url}\nSound Link: {sound_link}"
+    for category in categories:
         try:
-            data_list.append(video_obj['author'])
-        except Exception:
-            data_list.append('')
+            bot.send_message(chat_id=category, text=message)
+            bot.send_document(chat_id=category, document=open(video_path, 'rb'))
+            logger.info(f"Sent message to category: {category}")
+        except Exception as e:
+            logger.error(f"Failed to send message to category: {category}, error: {e}")
+
+# Function to get TikTok videos from an account
+def get_account_videos(account_url):
+    response = requests.get(account_url)
+    if response.status_code == 200:
+        page_content = response.text
+        soup = BeautifulSoup(page_content, 'html.parser')
+        script_tags = soup.find_all('script', {'type': 'application/json'})
+        video_urls = []
+        for script_tag in script_tags:
+            if 'videoData' in script_tag.string:
+                json_data = json.loads(script_tag.string)
+                for item in json_data['props']['pageProps']['items']:
+                    video_urls.append(f"https://www.tiktok.com/@{item['author']['uniqueId']}/video/{item['id']}")
+        return video_urls
+    return []
+
+# Function to download and send videos for a given TikTok account
+def download_and_send_videos(account_url, categories):
+    tiktok_videos = get_account_videos(account_url)
+    for video_url in tiktok_videos:
+        video_id = video_url.split('/')[-1]
+        if video_id not in downloaded_videos:
+            # Download the TikTok video
+            video_path = os.path.join(download_folder, f"{video_id}.mp4")
+            logger.info(f"Downloading video: {video_url}")
+            pyk.save_tiktok(video_url, True, video_path)
+
+            # Get the sound link
+            sound_link = get_sound_link(video_url)
+
+            # Add the video ID to the downloaded videos list
+            downloaded_videos.append(video_id)
+            save_json(downloaded_videos, downloaded_videos_file)
+
+            # Format and send the Telegram message
+            format_and_send_telegram_message(video_path, video_url, sound_link, categories)
+
+# Load downloaded videos to prevent re-downloading
+downloaded_videos_file = 'downloaded_videos.json'
+downloaded_videos = load_json(downloaded_videos_file)
+download_folder = 'downloaded_videos'
+os.makedirs(download_folder, exist_ok=True)
+
+# Initial run to download and send all existing TikToks
+logger.info("Starting initial run to download all existing TikToks...")
+for account_url, categories in tiktok_accounts.items():
+    download_and_send_videos(account_url, categories)
+
+# Monitoring loop to check for new TikToks
+logger.info("Starting monitoring loop to check for new TikToks...")
+while True:
     try:
-        data_list.append(video_obj['author']['nickname'])
-    except Exception:
-        try:
-            data_list.append(video_obj['nickname'])
-        except Exception:
-            data_list.append('')
-    try:
-        data_list.append(video_obj['authorStats']['followerCount'])
-    except Exception:
-        data_list.append(np.nan)
-    try:
-        data_list.append(video_obj['authorStats']['followingCount'])
-    except Exception:
-        data_list.append(np.nan)
-    try:
-        data_list.append(video_obj['authorStats']['heartCount'])
-    except Exception:
-        data_list.append(np.nan)
-    try:
-        data_list.append(video_obj['authorStats']['videoCount'])
-    except Exception:
-        data_list.append(np.nan)
-    try:
-        data_list.append(video_obj['authorStats']['diggCount'])
-    except Exception:
-        data_list.append(np.nan)
-    try:
-        data_list.append(video_obj['author']['verified'])
-    except Exception:
-        data_list.append(False)
-    data_row = pd.DataFrame(dict(zip(data_header,data_list)),index=[0])
-    return data_row
-#currently unused, but leaving it in case it's needed later
-'''
-def fix_tt_url(tt_url):
-    if 'www.' not in tt_url.lower():
-        url_parts = tt_url.split('://')
-        fixed_url = url_parts[0] + '://www.' + url_parts[1]
-        return fixed_url
-    else:
-        return tt_url
-'''
-def get_tiktok_json(video_url,browser_name=None):
-    if 'cookies' not in globals() and browser_name is None:
-        raise BrowserNotSpecifiedError
-    global cookies
-    if browser_name is not None:
-        cookies = getattr(browser_cookie3,browser_name)(domain_name='www.tiktok.com')
-    tt = requests.get(video_url,
-                      headers=headers,
-                      cookies=cookies,
-                      timeout=20)
-    # retain any new cookies that got set in this request
-    cookies = tt.cookies
-    soup = BeautifulSoup(tt.text, "html.parser")
-    tt_script = soup.find('script', attrs={'id':"SIGI_STATE"})
-    try:
-        tt_json = json.loads(tt_script.string)
-    except AttributeError:
-        return
-    return tt_json
-
-def alt_get_tiktok_json(video_url,browser_name=None):
-    if 'cookies' not in globals() and browser_name is None:
-        raise BrowserNotSpecifiedError
-    global cookies
-    if browser_name is not None:
-        cookies = getattr(browser_cookie3,browser_name)(domain_name='www.tiktok.com')
-    tt = requests.get(video_url,
-                      headers=headers,
-                      cookies=cookies,
-                      timeout=20)
-    # retain any new cookies that got set in this request
-    cookies = tt.cookies
-    soup = BeautifulSoup(tt.text, "html.parser")
-    tt_script = soup.find('script', attrs={'id':"__UNIVERSAL_DATA_FOR_REHYDRATION__"})
-    try:
-        tt_json = json.loads(tt_script.string)
-    except AttributeError:
-        print("The function encountered a downstream error and did not deliver any data, which happens periodically for various reasons. Please try again later.")
-        return
-    return tt_json
-
-def save_tiktok(video_url,
-                save_video=True,
-                metadata_fn='',
-                browser_name=None,
-                return_fns=False):
-    if 'cookies' not in globals() and browser_name is None:
-        raise BrowserNotSpecifiedError
-    if save_video == False and metadata_fn == '':
-        print('Since save_video and metadata_fn are both False/blank, the program did nothing.')
-        return
-
-    tt_json = get_tiktok_json(video_url,browser_name)
-
-    if tt_json is not None:
-        video_id = list(tt_json['ItemModule'].keys())[0]
-
-        if save_video == True:
-            regex_url = re.findall(url_regex, video_url)[0]
-            if 'imagePost' in tt_json['ItemModule'][video_id]:
-                slidecount = 1
-                for slide in tt_json['ItemModule'][video_id]['imagePost']['images']:
-                    video_fn = regex_url.replace('/', '_') + '_slide_' + str(slidecount) + '.jpeg'
-                    tt_video_url = slide['imageURL']['urlList'][0]
-                    headers['referer'] = 'https://www.tiktok.com/'
-                    # include cookies with the video request
-                    tt_video = requests.get(tt_video_url, allow_redirects=True, headers=headers, cookies=cookies)
-                    with open(video_fn, 'wb') as fn:
-                        fn.write(tt_video.content)
-                    slidecount += 1
-            else:
-                regex_url = re.findall(url_regex, video_url)[0]
-                video_fn = regex_url.replace('/', '_') + '.mp4'
-                tt_video_url = tt_json['ItemModule'][video_id]['video']['downloadAddr']
-                headers['referer'] = 'https://www.tiktok.com/'
-                # include cookies with the video request
-                tt_video = requests.get(tt_video_url, allow_redirects=True, headers=headers, cookies=cookies)
-            with open(video_fn, 'wb') as fn:
-                fn.write(tt_video.content)
-            print("Saved video\n", tt_video_url, "\nto\n", os.getcwd())
-
-        if metadata_fn != '':
-            data_slot = tt_json['ItemModule'][video_id]
-            data_row = generate_data_row(data_slot)
-            try:
-                user_id = list(tt_json['UserModule']['users'].keys())[0]
-                data_row.loc[0,"author_verified"] = tt_json['UserModule']['users'][user_id]['verified']
-            except Exception:
-                pass
-            if os.path.exists(metadata_fn):
-                metadata = pd.read_csv(metadata_fn,keep_default_na=False)
-                combined_data = pd.concat([metadata,data_row])
-            else:
-                combined_data = data_row
-            combined_data.to_csv(metadata_fn,index=False)
-
-    else:
-        tt_json = alt_get_tiktok_json(video_url,browser_name)
-        if save_video == True:
-            regex_url = re.findall(url_regex, video_url)[0]
-            video_fn = regex_url.replace('/', '_') + '.mp4'
-            tt_video_url = tt_json["__DEFAULT_SCOPE__"]['webapp.video-detail']['itemInfo']['itemStruct']['video']['downloadAddr']
-            headers['referer'] = 'https://www.tiktok.com/'
-            # include cookies with the video request
-            tt_video = requests.get(tt_video_url, allow_redirects=True, headers=headers, cookies=cookies)
-            with open(video_fn, 'wb') as fn:
-                fn.write(tt_video.content)
-            print("Saved video\n", video_url, "\nto\n", os.getcwd())
-
-        if metadata_fn != '':
-            data_slot = tt_json["__DEFAULT_SCOPE__"]['webapp.video-detail']['itemInfo']['itemStruct']
-            data_row = generate_data_row(data_slot)
-            try:
-                user_id = list(tt_json['UserModule']['users'].keys())[0]
-                data_row.loc[0,"author_verified"] = tt_json["__DEFAULT_SCOPE__"]['webapp.video-detail']['itemInfo']['itemStruct']['author']
-            except Exception:
-                pass
-            if os.path.exists(metadata_fn):
-                metadata = pd.read_csv(metadata_fn,keep_default_na=False)
-                combined_data = pd.concat([metadata,data_row])
-            else:
-                combined_data = data_row
-            combined_data.to_csv(metadata_fn,index=False)
-            print("Saved metadata for video\n", video_url, "\nto\n", os.getcwd())
-
-        if return_fns == True:
-            return {'video_fn':video_fn,'metadata_fn':metadata_fn}
-
-async def get_video_urls(tt_ent,
-                         ent_type="user",
-                         video_ct=30,
-                         headless=True):
-    if ent_type not in ['user','hashtag','video_related']:
-        raise Exception('Only allowed `ent_type` values are "user", "hashtag", or "video_related".')
-
-    url_p1 = "https://www.tiktok.com/@"
-    url_p2 = "/video/"
-    tt_list = []
-
-    async with TikTokApi() as api:
-        await api.create_sessions(headless=headless,
-                                  ms_tokens=[ms_token],
-                                  num_sessions=1,
-                                  sleep_after=3,
-                                  context_options=context_dict)
-        if ent_type == 'user':
-            ent = api.user(tt_ent)
-        elif ent_type == 'hashtag':
-            ent = api.hashtag(name=tt_ent)
-        else:
-            ent = api.video(url=tt_ent)
-
-        if ent_type in ['user','hashtag']:
-            async for video in ent.videos(count=video_ct):
-                tt_list.append(video.as_dict)
-        else:
-            async for related_video in ent.related_videos(count=video_ct):
-                tt_list.append(related_video.as_dict)
-
-    id_list = [i['id'] for i in tt_list]
-    if ent_type == 'user':
-        video_list = [url_p1 + tt_ent + url_p2 + i for i in id_list]
-    else:
-        author_list = [i['author']['uniqueId'] for i in tt_list]
-        video_list = []
-        for n, i in enumerate(author_list):
-            video_url = url_p1 + author_list[n] + url_p2 + id_list[n]
-            video_list.append(video_url)
-    return video_list
-
-def save_tiktok_multi_urls(video_urls,
-                           save_video=True,
-                           metadata_fn='',
-                           sleep=4,
-                           browser_name=None):
-    if 'cookies' not in globals() and browser_name is None:
-        raise BrowserNotSpecifiedError
-    if type(video_urls) is str:
-        tt_urls = open(video_urls).read().splitlines()
-    else:
-        tt_urls = video_urls
-    for u in tt_urls:
-        save_tiktok(u,save_video,metadata_fn,browser_name)
-        time.sleep(random.randint(1, sleep))
-    print('Saved',len(tt_urls),'videos and/or lines of metadata')
-
-def save_tiktok_multi_page(tt_ent,
-                           ent_type="user",
-                           video_ct=30,
-                           headless=True,
-                           save_video=True,
-                           metadata_fn='',
-                           sleep=4,
-                           browser_name=None):
-    video_urls = asyncio.run(get_video_urls(tt_ent,
-                                            ent_type,
-                                            video_ct,
-                                            headless))
-    save_tiktok_multi_urls(video_urls,
-                           save_video,
-                           metadata_fn,
-                           sleep,
-                           browser_name)
-
-async def get_comments(video_id,comment_count=30,headless=True):
-    comment_list = []
-    async with TikTokApi() as api:
-        await api.create_sessions(headless=headless,
-                                  ms_tokens=[ms_token],
-                                  num_sessions=1,
-                                  sleep_after=3,
-                                  context_options=context_dict)
-        video = api.video(id=video_id)
-        async for comment in video.comments(count=comment_count):
-            comment_list.append(comment.as_dict)
-    return pd.DataFrame(comment_list)
-
-def save_tiktok_comments(video_url,
-                         filename='',
-                         comment_count=30,
-                         headless=True,
-                         save_comments=True,
-                         return_comments=True):
-    video_id = int(re.findall(video_id_regex,video_url)[0])
-    comment_results = asyncio.run(get_comments(video_id,comment_count,headless=headless))
-    if save_comments:
-        if filename == '':
-            regex_url = re.findall(url_regex, video_url)[0]
-            filename = regex_url.replace('/', '_') + '_comments.csv'
-        data_to_save = deduplicate_metadata(filename,comment_results,'cid')
-        data_to_save.to_csv(filename,mode='w',index=False)
-        print(len(comment_results),"comments saved.")
-    if return_comments:
-        return comment_results
+        for account_url, categories in tiktok_accounts.items():
+            download_and_send_videos(account_url, categories)
+        # Sleep for a while before checking again
+        logger.info("Sleeping for 10 minutes before checking again...")
+        time.sleep(600)  # Check every 10 minutes
+    except Exception as e:
+        logger.error(f"Error in monitoring loop: {e}")
+        time.sleep(600)  # Sleep before retrying in case of error
