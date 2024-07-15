@@ -12,7 +12,7 @@ import pyktok as pyk
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(_name_)
+logger = logging.getLogger(__name__)
 
 # Function to install missing packages
 def install(package):
@@ -22,7 +22,7 @@ def install(package):
 packages = ["browser_cookie3", "pyktok", "beautifulsoup4", "python-telegram-bot"]
 for package in packages:
     try:
-        _import_(package)
+        __import__(package)
     except ImportError:
         install(package)
 
@@ -61,45 +61,35 @@ def specify_browser(browser_name):
 
 # Function to get the sound link from a TikTok video page
 def get_sound_link(video_url):
-    logger.info(f"Fetching sound link for: {video_url}")
-    response = requests.get(video_url)
-    if response.status_code == 200:
-        page_content = response.text
-        soup = BeautifulSoup(page_content, 'html.parser')
-        sound_link = soup.find('a', {'class': 'music-card'})
-        if sound_link:
-            return sound_link['href']
-    logger.error(f"Failed to fetch sound link for: {video_url}")
-    return None
+    try:
+        response = requests.get(video_url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        sound_link = soup.find('a', {'class': 'music-link'}).get('href')
+        return sound_link
+    except Exception as e:
+        logger.error(f"Error fetching sound link: {e}")
+        return None
 
-# Function to format and send Telegram messages
 def format_and_send_telegram_message(video_path, video_url, sound_link, categories):
-    message = f"Video.mp4\nVideo Link: {video_url}\nSound Link: {sound_link}"
-    for category in categories:
-        try:
-            bot.send_message(chat_id=category, text=message)
-            bot.send_document(chat_id=category, document=open(video_path, 'rb'))
-            logger.info(f"Sent message to category: {category}")
-        except Exception as e:
-            logger.error(f"Failed to send message to category: {category}, error: {e}")
+    try:
+        message = f"New TikTok Video\n\nURL: {video_url}\nSound: {sound_link}\nCategories: {', '.join(categories)}"
+        bot.send_video(chat_id=TELEGRAM_CHAT_ID, video=open(video_path, 'rb'), caption=message)
+        logger.info(f"Successfully sent video: {video_url}")
+    except Exception as e:
+        logger.error(f"Error sending video to Telegram: {e}")
 
-# Function to get TikTok videos from an account
 def get_account_videos(account_url):
-    response = requests.get(account_url)
-    if response.status_code == 200:
-        page_content = response.text
-        soup = BeautifulSoup(page_content, 'html.parser')
-        script_tags = soup.find_all('script', {'type': 'application/json'})
-        video_urls = []
-        for script_tag in script_tags:
-            if 'videoData' in script_tag.string:
-                json_data = json.loads(script_tag.string)
-                for item in json_data['props']['pageProps']['items']:
-                    video_urls.append(f"https://www.tiktok.com/@{item['author']['uniqueId']}/video/{item['id']}")
-        return video_urls
-    return []
+    try:
+        response = requests.get(account_url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        video_links = [a['href'] for a in soup.find_all('a', href=True) if '/video/' in a['href']]
+        return video_links
+    except Exception as e:
+        logger.error(f"Error fetching account videos: {e}")
+        return []
 
-# Function to download and send videos for a given TikTok account
 def download_and_send_videos(account_url, categories):
     tiktok_videos = get_account_videos(account_url)
     for video_url in tiktok_videos:
@@ -142,4 +132,4 @@ while True:
         time.sleep(600)  # Check every 10 minutes
     except Exception as e:
         logger.error(f"Error in monitoring loop: {e}")
-        time.sleep(600)  # Sleep before retrying in case of error
+        time.sleep(600)  # Sleep before retrying in case of error
