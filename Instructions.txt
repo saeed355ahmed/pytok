@@ -1,0 +1,18 @@
+Instructions for Python/Telegram Bot Script
+
+Objective:
+	Monitor a list of TikTok accounts 24/7. When a new TikTok is posted by any of the 	monitored accounts, the bot will:
+
+	- Copy the TikTok link.
+	- Copy the sound link.
+	- Download the TikTok video.
+	- Save the TikTok ID/Link into a JSON file to prevent re-downloading the same 	video.
+	- Format the TikTok link, sound link, video and then send a message to the assigned 	category/topic on Telegram.
+
+The bot will send the message in the following format:
+
+	"Video.mp4"
+	"Video Link: example.tiktok.com"
+	"Sound Link: example.sound1.tiktok.com"
+
+
